@@ -12,11 +12,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import { zip, unzip } from 'react-native-zip-archive';
+import { moderateScale, verticalScale } from 'react-native-size-matters';
 import { theme } from '../../theme';
+import { closeDB, initDB } from '../../services/dbService';
 
-// ─── Constants & Setup ───────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-// NOTE: Replace webClientId with your actual Google Cloud web client ID to fully test!
+// ⚠️  Replace with your actual Google Cloud OAuth 2.0 Web Client ID
 const GOOGLE_WEB_CLIENT_ID = 'PLACEHOLDER_WEB_CLIENT_ID.apps.googleusercontent.com';
 
 const BACKUP_FOLDER_NAME = 'CardsManager';
@@ -28,45 +30,123 @@ GoogleSignin.configure({
   offlineAccess: true,
 });
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── Drive API Helpers ────────────────────────────────────────────────────────
+
+async function getDriveFolderId(accessToken: string): Promise<string | null> {
+  const q = encodeURIComponent(
+    `name='${BACKUP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
+  );
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json();
+  return data.files?.length ? data.files[0].id : null;
+}
+
+async function createDriveFolder(accessToken: string): Promise<string | null> {
+  const res = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: BACKUP_FOLDER_NAME,
+      mimeType: 'application/vnd.google-apps.folder',
+    }),
+  });
+  const data = await res.json();
+  return data.id || null;
+}
+
+async function findBackupFileId(accessToken: string, folderId: string): Promise<string | null> {
+  const q = encodeURIComponent(
+    `name='${BACKUP_FILE_NAME}' and '${folderId}' in parents and trashed=false`
+  );
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json();
+  return data.files?.length ? data.files[0].id : null;
+}
+
+/**
+ * Build a staging directory in cache containing:
+ *  - cards.db   (from expo-sqlite location)
+ *  - images/    (all card_*.jpg files from documentDirectory)
+ * Returns the path of the staging directory.
+ */
+async function buildBackupStaging(): Promise<string> {
+  const stagingDir = `${FileSystem.cacheDirectory}scango_backup_staging/`;
+  const imagesDir = `${stagingDir}images/`;
+
+  // Clean up any previous staging
+  await FileSystem.deleteAsync(stagingDir, { idempotent: true });
+  await FileSystem.makeDirectoryAsync(imagesDir, { intermediates: true });
+
+  // Copy SQLite database
+  const dbSrc = `${FileSystem.documentDirectory}SQLite/cards.db`;
+  const dbSrcAlt = `${FileSystem.documentDirectory}cards.db`;
+  const dbInfo = await FileSystem.getInfoAsync(dbSrc);
+  const dbInfoAlt = await FileSystem.getInfoAsync(dbSrcAlt);
+
+  if (dbInfo.exists) {
+    await FileSystem.copyAsync({ from: dbSrc, to: `${stagingDir}cards.db` });
+  } else if (dbInfoAlt.exists) {
+    await FileSystem.copyAsync({ from: dbSrcAlt, to: `${stagingDir}cards.db` });
+  }
+
+  // Copy card images
+  const docDir = FileSystem.documentDirectory ?? '';
+  const docContents = await FileSystem.readDirectoryAsync(docDir);
+  const cardImages = docContents.filter(
+    (f) => f.startsWith('card_') && f.endsWith('.jpg')
+  );
+  for (const img of cardImages) {
+    await FileSystem.copyAsync({
+      from: `${docDir}${img}`,
+      to: `${imagesDir}${img}`,
+    });
+  }
+
+  return stagingDir;
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function SettingsScreen() {
   const [userInfo, setUserInfo] = useState<any>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [processStatus, setProcessStatus] = useState<string>('');
+  const [processStatus, setProcessStatus] = useState('');
 
-  // ─── Auth Flow ───
+  // Silent sign-in on mount
   useEffect(() => {
-    // Check if user is already signed in quietly
-    const checkSignInInfo = async () => {
+    (async () => {
       try {
-        const userInfo = await GoogleSignin.signInSilently();
-        setUserInfo(userInfo);
-      } catch (error: any) {
-        if (error.code !== statusCodes.SIGN_IN_REQUIRED) {
-          console.warn('Silent sign in error:', error);
+        const info = await GoogleSignin.signInSilently();
+        setUserInfo(info);
+      } catch (err: any) {
+        if (err.code !== statusCodes.SIGN_IN_REQUIRED) {
+          console.warn('Silent sign in error:', err);
         }
       }
-    };
-    checkSignInInfo();
+    })();
   }, []);
 
   const handleSignIn = async () => {
     try {
       setIsSigningIn(true);
       await GoogleSignin.hasPlayServices();
-      const userInfo = await GoogleSignin.signIn();
-      setUserInfo(userInfo);
-    } catch (error: any) {
-      if (error.code === statusCodes.SIGN_IN_CANCELLED) {
-        // user cancelled
-      } else if (error.code === statusCodes.IN_PROGRESS) {
-        // operation already in progress
-      } else if (error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
-        Alert.alert('Play Services not available or outdated');
+      const info = await GoogleSignin.signIn();
+      setUserInfo(info);
+    } catch (err: any) {
+      if (err.code === statusCodes.SIGN_IN_CANCELLED) {
+        // user cancelled – no error alert
+      } else if (err.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+        Alert.alert('Error', 'Google Play Services not available or outdated.');
       } else {
-        Alert.alert('Sign-In Error', error?.message || 'Unknown error');
+        Alert.alert('Sign-In Error', err?.message || 'Unknown error');
       }
     } finally {
       setIsSigningIn(false);
@@ -77,114 +157,59 @@ export default function SettingsScreen() {
     try {
       await GoogleSignin.signOut();
       setUserInfo(null);
-    } catch (error) {
-      console.error(error);
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  // ─── Drive API Helpers ───
-
-  const getDriveFolderId = async (accessToken: string): Promise<string | null> => {
-    // Search for existing CardsManager folder
-    const q = encodeURIComponent(`name='${BACKUP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
-    const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const data = await res.json();
-    if (data.files && data.files.length > 0) {
-      return data.files[0].id;
-    }
-    return null;
-  };
-
-  const createDriveFolder = async (accessToken: string): Promise<string | null> => {
-    const metadata = {
-      name: BACKUP_FOLDER_NAME,
-      mimeType: 'application/vnd.google-apps.folder',
-    };
-    const res = await fetch('https://www.googleapis.com/drive/v3/files', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(metadata),
-    });
-    const data = await res.json();
-    return data.id || null;
-  };
-
-  const findBackupFileId = async (accessToken: string, folderId: string): Promise<string | null> => {
-    const q = encodeURIComponent(`name='${BACKUP_FILE_NAME}' and '${folderId}' in parents and trashed=false`);
-    const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const data = await res.json();
-    if (data.files && data.files.length > 0) {
-      return data.files[0].id;
-    }
-    return null;
-  };
-
-  // ─── Backup Flow ───
+  // ─── Backup ───
 
   const handleBackup = useCallback(async () => {
     if (!userInfo) return;
     setIsProcessing(true);
+    const zipPath = `${FileSystem.cacheDirectory}ScanGoBackup_upload.zip`;
+    let stagingDir: string | null = null;
+
     try {
-      setProcessStatus('Compressing app data...');
-      // 1. Create ZIP of document directory (where cards.db and photos live)
-      const zipPath = `${FileSystem.cacheDirectory}ScanGoBackup_temp.zip`;
-      const sourceDir = FileSystem.documentDirectory;
-      if (!sourceDir) throw new Error('Document directory unavailable');
+      setProcessStatus('Preparing files…');
+      stagingDir = await buildBackupStaging();
 
-      await zip(sourceDir, zipPath);
+      setProcessStatus('Compressing…');
+      await zip(stagingDir, zipPath);
 
-      // 2. Get tokens for Drive Upload
-      setProcessStatus('Connecting to Google Drive...');
-      
-      // Ensure user is actually signed in
+      setProcessStatus('Connecting to Google Drive…');
       const currentUser = await GoogleSignin.getCurrentUser();
-      if (!currentUser) {
-        setUserInfo(null);
-        throw new Error('You must be signed in to Google to perform a backup.');
-      }
+      if (!currentUser) { setUserInfo(null); throw new Error('Sign in required.'); }
+      const { accessToken } = await GoogleSignin.getTokens();
 
-      const tokens = await GoogleSignin.getTokens();
-      const accessToken = tokens.accessToken;
-
-      // 3. Find or create folder
+      // Find or create folder
       let folderId = await getDriveFolderId(accessToken);
-      if (!folderId) {
-        folderId = await createDriveFolder(accessToken);
-      }
-      if (!folderId) throw new Error('Could not create Drive folder');
+      if (!folderId) folderId = await createDriveFolder(accessToken);
+      if (!folderId) throw new Error('Could not create Drive folder.');
 
-      // 4. Check if backup file exists to overwrite
+      // Check if backup file already exists (for PATCH / overwrite)
       const existingFileId = await findBackupFileId(accessToken, folderId);
 
-      setProcessStatus('Uploading backup...');
-      
-      // 5. Read ZIP file as base64
-      const zipBase64 = await FileSystem.readAsStringAsync(zipPath, { encoding: FileSystem.EncodingType.Base64 });
-      
-      // 6. Construct multipart request manually
-      const boundary = 'foo_bar_baz_scan_go';
-      
+      setProcessStatus('Uploading backup…');
+      const zipBase64 = await FileSystem.readAsStringAsync(zipPath, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      const boundary = 'scango_backup_boundary_20240101';
       const metadata = {
         name: BACKUP_FILE_NAME,
-        parents: existingFileId ? undefined : [folderId], // pass parent only on create
+        ...(existingFileId ? {} : { parents: [folderId] }),
       };
 
-      let body = '';
-      body += `--${boundary}\r\n`;
-      body += 'Content-Type: application/json; charset=UTF-8\r\n\r\n';
-      body += JSON.stringify(metadata) + '\r\n';
-      body += `--${boundary}\r\n`;
-      body += 'Content-Type: application/zip\r\n';
-      body += 'Content-Transfer-Encoding: base64\r\n\r\n';
-      body += zipBase64 + '\r\n';
-      body += `--${boundary}--`;
+      const body =
+        `--${boundary}\r\n` +
+        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+        JSON.stringify(metadata) + '\r\n' +
+        `--${boundary}\r\n` +
+        'Content-Type: application/zip\r\n' +
+        'Content-Transfer-Encoding: base64\r\n\r\n' +
+        zipBase64 + '\r\n' +
+        `--${boundary}--`;
 
       const method = existingFileId ? 'PATCH' : 'POST';
       const uploadUrl = existingFileId
@@ -205,59 +230,62 @@ export default function SettingsScreen() {
         throw new Error(`Upload failed: ${err}`);
       }
 
-      // Cleanup
-      await FileSystem.deleteAsync(zipPath, { idempotent: true });
-
-      Alert.alert('Backup Successful', 'Your cards and photos have been backed up to Google Drive.');
+      Alert.alert('✅ Backup Successful', 'Your cards and photos have been backed up to Google Drive.');
     } catch (err: any) {
       console.error('Backup error:', err);
       Alert.alert('Backup Error', err.message || 'An unknown error occurred.');
     } finally {
+      if (stagingDir) await FileSystem.deleteAsync(stagingDir, { idempotent: true });
+      await FileSystem.deleteAsync(zipPath, { idempotent: true });
       setIsProcessing(false);
       setProcessStatus('');
     }
   }, [userInfo]);
 
-  // ─── Restore Flow ───
+  // ─── Restore ───
 
   const handleRestore = useCallback(async () => {
     if (!userInfo) return;
-    
+
     Alert.alert(
       'Restore Backup',
-      'This will overwrite all current local cards and photos with the Drive backup. Are you sure?',
+      'This will overwrite all current local cards and photos with the Drive backup. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Restore', 
+        {
+          text: 'Restore',
           style: 'destructive',
           onPress: async () => {
             setIsProcessing(true);
+            const zipPath = `${FileSystem.cacheDirectory}ScanGoBackup_restore.zip`;
             try {
-              setProcessStatus('Connecting to Google Drive...');
-              
-              // Ensure user is actually signed in
+              setProcessStatus('Connecting to Google Drive…');
               const currentUser = await GoogleSignin.getCurrentUser();
-              if (!currentUser) {
-                setUserInfo(null);
-                throw new Error('You must be signed in to Google to perform a restore.');
+              if (!currentUser) { setUserInfo(null); throw new Error('Sign in required.'); }
+              const { accessToken } = await GoogleSignin.getTokens();
+
+              // Find the CardsManager folder
+              const folderId = await getDriveFolderId(accessToken);
+              if (!folderId) {
+                Alert.alert(
+                  'Backup Not Found',
+                  'No backup was found in your Google Drive CardsManager folder.'
+                );
+                return;
               }
 
-              const tokens = await GoogleSignin.getTokens();
-              const accessToken = tokens.accessToken;
-
-              // 1. Find folder & file
-              const folderId = await getDriveFolderId(accessToken);
-              if (!folderId) throw new Error('Backup folder not found on Drive.');
-              
+              // Find the backup ZIP
               const fileId = await findBackupFileId(accessToken, folderId);
-              if (!fileId) throw new Error('Backup file not found in Drive folder.');
+              if (!fileId) {
+                Alert.alert(
+                  'Backup Not Found',
+                  'No backup was found in your Google Drive CardsManager folder.'
+                );
+                return;
+              }
 
-              // 2. Download from Google Drive
-              setProcessStatus('Downloading backup...');
+              setProcessStatus('Downloading backup…');
               const downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-              const zipPath = `${FileSystem.cacheDirectory}ScanGoBackup_restore.zip`;
-              
               const downloadResult = await FileSystem.downloadAsync(
                 downloadUrl,
                 zipPath,
@@ -265,25 +293,58 @@ export default function SettingsScreen() {
               );
 
               if (downloadResult.status !== 200) {
-                throw new Error('Failed to download backup file');
+                throw new Error('Failed to download backup file.');
               }
 
-              // 3. Extract to Document Directory
-              setProcessStatus('Extracting backup...');
-              const destDir = FileSystem.documentDirectory;
-              if (!destDir) throw new Error('Document directory unavailable');
-              
-              await unzip(zipPath, destDir);
-              
+              // Close the DB so the file can be overwritten
+              setProcessStatus('Closing database…');
+              await closeDB();
+
+              // Extract ZIP to a temp location then move files
+              setProcessStatus('Extracting backup…');
+              const extractDir = `${FileSystem.cacheDirectory}scango_restore_tmp/`;
+              await FileSystem.deleteAsync(extractDir, { idempotent: true });
+              await FileSystem.makeDirectoryAsync(extractDir, { intermediates: true });
+              await unzip(zipPath, extractDir);
+
+              // Move cards.db → documentDirectory/SQLite/cards.db
+              const docDir = FileSystem.documentDirectory ?? '';
+              const sqliteDir = `${docDir}SQLite/`;
+              const dbExtracted = `${extractDir}cards.db`;
+              const dbInfo = await FileSystem.getInfoAsync(dbExtracted);
+              if (dbInfo.exists) {
+                await FileSystem.makeDirectoryAsync(sqliteDir, { intermediates: true });
+                // Also write to docDir directly (expo-sqlite may look there)
+                await FileSystem.copyAsync({ from: dbExtracted, to: `${sqliteDir}cards.db` });
+                await FileSystem.copyAsync({ from: dbExtracted, to: `${docDir}cards.db` });
+              }
+
+              // Move card images from images/ sub-folder
+              const imagesExtracted = `${extractDir}images/`;
+              const imagesInfo = await FileSystem.getInfoAsync(imagesExtracted);
+              if (imagesInfo.exists) {
+                const imgs = await FileSystem.readDirectoryAsync(imagesExtracted);
+                for (const img of imgs) {
+                  await FileSystem.copyAsync({
+                    from: `${imagesExtracted}${img}`,
+                    to: `${docDir}${img}`,
+                  });
+                }
+              }
+
+              // Re-init DB with restored data
+              setProcessStatus('Reloading database…');
+              await initDB();
+
               // Cleanup
+              await FileSystem.deleteAsync(extractDir, { idempotent: true });
               await FileSystem.deleteAsync(zipPath, { idempotent: true });
 
               Alert.alert(
-                'Restore Complete',
-                'Your cards and photos have been restored. Please restart the app completely for the database to load the restored data.',
+                '✅ Restore Complete',
+                'Your cards and photos have been restored. Please restart the app to see all your data.',
                 [{ text: 'OK' }]
               );
-
             } catch (err: any) {
               console.error('Restore error:', err);
               Alert.alert('Restore Error', err.message || 'An unknown error occurred.');
@@ -291,8 +352,8 @@ export default function SettingsScreen() {
               setIsProcessing(false);
               setProcessStatus('');
             }
-          }
-        }
+          },
+        },
       ]
     );
   }, [userInfo]);
@@ -302,71 +363,79 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        
+
         <View style={styles.header}>
-          <Text style={styles.title}>Settings & Backup</Text>
-          <Text style={styles.subtitle}>Manage your cloud sync and preferences</Text>
+          <Text style={styles.title}>Settings</Text>
+          <Text style={styles.subtitle}>Manage your cloud sync</Text>
         </View>
 
+        {/* Google Drive Card */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Google Drive Sync</Text>
-          
+          <Text style={styles.cardTitle}>☁️  Google Drive Backup</Text>
+
           {userInfo ? (
             <View style={styles.authContainer}>
               <View style={styles.userRow}>
-                <Text style={styles.userLabel}>Signed in as:</Text>
-                <Text style={styles.userName}>{userInfo.user?.email || 'User'}</Text>
+                <Text style={styles.userLabel}>Signed in as</Text>
+                <Text style={styles.userName} numberOfLines={1}>
+                  {userInfo.user?.email || 'Unknown'}
+                </Text>
               </View>
 
-              {!isProcessing ? (
-                <>
-                  <TouchableOpacity style={styles.primaryBtn} onPress={handleBackup}>
-                    <Text style={styles.btnIcon}>☁️</Text>
-                    <Text style={styles.primaryBtnText}>Backup to Google Drive</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity style={styles.secondaryBtn} onPress={handleRestore}>
-                    <Text style={styles.btnIcon}>📥</Text>
-                    <Text style={styles.secondaryBtnText}>Restore from Drive</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity style={styles.textBtn} onPress={handleSignOut}>
-                    <Text style={styles.textBtnText}>Sign Out</Text>
-                  </TouchableOpacity>
-                </>
-              ) : (
+              {isProcessing ? (
                 <View style={styles.processingWrap}>
                   <ActivityIndicator size="large" color={theme.colors.primary} />
                   <Text style={styles.processingText}>{processStatus}</Text>
                 </View>
+              ) : (
+                <>
+                  <TouchableOpacity style={styles.primaryBtn} onPress={handleBackup}>
+                    <Text style={styles.primaryBtnText}>📤  Backup to Google Drive</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={styles.secondaryBtn} onPress={handleRestore}>
+                    <Text style={styles.secondaryBtnText}>📥  Restore from Drive</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={styles.signOutBtn} onPress={handleSignOut}>
+                    <Text style={styles.signOutBtnText}>Sign Out</Text>
+                  </TouchableOpacity>
+                </>
               )}
             </View>
           ) : (
             <View style={styles.authContainer}>
               <Text style={styles.authDesc}>
-                Sign in with Google to securely backup your scanned business cards and photos to your personal Google Drive.
+                Sign in with Google to backup your scanned cards and photos to your personal Google Drive. Your data is stored in a private{' '}
+                <Text style={{ fontWeight: '700' }}>CardsManager</Text> folder.
               </Text>
-              
+
               {isSigningIn ? (
                 <ActivityIndicator size="large" color={theme.colors.primary} />
               ) : (
-                <TouchableOpacity style={styles.googleBtn} onPress={handleSignIn}>
+                <TouchableOpacity style={styles.googleBtn} onPress={handleSignIn} activeOpacity={0.85}>
                   <Text style={styles.googleBtnIcon}>G</Text>
                   <Text style={styles.googleBtnText}>Sign In with Google</Text>
                 </TouchableOpacity>
               )}
-              
-              <Text style={styles.placeholderWarning}>
-                Note: Ensure the GOOGLE_WEB_CLIENT_ID constant in the code matches your Google Cloud project config.
-              </Text>
+
+              {GOOGLE_WEB_CLIENT_ID.includes('PLACEHOLDER') && (
+                <Text style={styles.placeholderWarning}>
+                  ⚠️  Set GOOGLE_WEB_CLIENT_ID in settings.tsx before testing Google Sign-In.
+                </Text>
+              )}
             </View>
           )}
         </View>
 
+        {/* About */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>About ScanGo</Text>
+          <Text style={styles.cardTitle}>ℹ️  About ScanGo</Text>
           <Text style={styles.aboutText}>Version 1.0.0</Text>
-          <Text style={styles.aboutText}>Offline OCR Business Card Scanner</Text>
+          <Text style={styles.aboutText}>Offline-First Business Card Scanner</Text>
+          <Text style={styles.aboutNote}>
+            All data is stored on-device. No cloud processing. No paid APIs.
+          </Text>
         </View>
 
       </ScrollView>
@@ -382,87 +451,108 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.background,
   },
   scrollContent: {
-    padding: theme.spacing.m,
+    padding: moderateScale(16),
+    paddingBottom: verticalScale(40),
   },
   header: {
-    marginBottom: theme.spacing.l,
-    marginTop: theme.spacing.s,
+    marginBottom: verticalScale(16),
+    marginTop: verticalScale(4),
   },
   title: {
-    fontSize: theme.fontSize.xlarge,
+    fontSize: moderateScale(26),
     fontWeight: '800',
     color: theme.colors.primary,
   },
   subtitle: {
-    fontSize: theme.fontSize.small,
+    fontSize: moderateScale(13),
     color: theme.colors.placeholder,
-    marginTop: 4,
+    marginTop: verticalScale(2),
   },
   card: {
     backgroundColor: '#f8fafd',
-    borderRadius: theme.borderRadius.m,
-    padding: theme.spacing.l,
-    marginBottom: theme.spacing.m,
+    borderRadius: moderateScale(14),
+    padding: moderateScale(18),
+    marginBottom: moderateScale(14),
     borderWidth: 1,
     borderColor: theme.colors.border,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 6,
+    elevation: 2,
   },
   cardTitle: {
-    fontSize: theme.fontSize.medium,
+    fontSize: moderateScale(15),
     fontWeight: '700',
     color: theme.colors.text,
-    marginBottom: theme.spacing.m,
+    marginBottom: verticalScale(14),
   },
   aboutText: {
-    fontSize: theme.fontSize.small,
+    fontSize: moderateScale(14),
     color: theme.colors.text,
-    marginBottom: 4,
+    marginBottom: verticalScale(4),
+  },
+  aboutNote: {
+    fontSize: moderateScale(12),
+    color: theme.colors.placeholder,
+    marginTop: verticalScale(6),
+    fontStyle: 'italic',
   },
   authContainer: {
     alignItems: 'center',
     width: '100%',
+    gap: verticalScale(12),
   },
   authDesc: {
-    fontSize: theme.fontSize.small,
+    fontSize: moderateScale(13),
     color: theme.colors.text,
     textAlign: 'center',
-    marginBottom: theme.spacing.l,
-    lineHeight: 20,
+    lineHeight: moderateScale(20),
+    marginBottom: verticalScale(4),
   },
   userRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: theme.spacing.l,
-    gap: 8,
+    gap: moderateScale(8),
+    backgroundColor: '#eef3ff',
+    paddingHorizontal: moderateScale(14),
+    paddingVertical: verticalScale(8),
+    borderRadius: moderateScale(30),
+    alignSelf: 'center',
   },
   userLabel: {
-    fontSize: theme.fontSize.small,
+    fontSize: moderateScale(12),
     color: theme.colors.placeholder,
   },
   userName: {
-    fontSize: theme.fontSize.small,
-    fontWeight: '600',
-    color: theme.colors.text,
+    fontSize: moderateScale(12),
+    fontWeight: '700',
+    color: theme.colors.primary,
+    maxWidth: moderateScale(200),
   },
-  
-  // Buttons
   googleBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#dadce0',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: theme.borderRadius.m,
-    gap: 12,
+    paddingVertical: verticalScale(13),
+    paddingHorizontal: moderateScale(20),
+    borderRadius: moderateScale(10),
+    gap: moderateScale(12),
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 2,
   },
   googleBtnIcon: {
-    fontSize: 18,
+    fontSize: moderateScale(18),
     fontWeight: '800',
     color: '#4285F4',
   },
   googleBtnText: {
-    fontSize: theme.fontSize.medium,
+    fontSize: moderateScale(15),
     fontWeight: '600',
     color: '#3c4043',
   },
@@ -470,61 +560,59 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: theme.colors.primary,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: theme.borderRadius.m,
+    paddingVertical: verticalScale(14),
+    paddingHorizontal: moderateScale(20),
+    borderRadius: moderateScale(12),
     width: '100%',
     justifyContent: 'center',
-    marginBottom: theme.spacing.m,
-    gap: 8,
+    shadowColor: theme.colors.primary,
+    shadowOpacity: 0.25,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 6,
+    elevation: 3,
   },
   primaryBtnText: {
     color: '#fff',
-    fontSize: theme.fontSize.medium,
+    fontSize: moderateScale(15),
     fontWeight: '700',
   },
   secondaryBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#eaf0ff',
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: theme.borderRadius.m,
+    paddingVertical: verticalScale(14),
+    paddingHorizontal: moderateScale(20),
+    borderRadius: moderateScale(12),
     width: '100%',
     justifyContent: 'center',
-    marginBottom: theme.spacing.l,
-    gap: 8,
   },
   secondaryBtnText: {
     color: theme.colors.primary,
-    fontSize: theme.fontSize.medium,
+    fontSize: moderateScale(15),
     fontWeight: '700',
   },
-  btnIcon: {
-    fontSize: 18,
+  signOutBtn: {
+    paddingVertical: verticalScale(8),
   },
-  textBtn: {
-    padding: 10,
-  },
-  textBtnText: {
+  signOutBtnText: {
     color: '#e74c3c',
-    fontSize: theme.fontSize.small,
+    fontSize: moderateScale(13),
     fontWeight: '600',
   },
   placeholderWarning: {
-    fontSize: 11,
+    fontSize: moderateScale(11),
     color: '#e67e22',
     textAlign: 'center',
-    marginTop: theme.spacing.l,
     fontStyle: 'italic',
+    paddingHorizontal: moderateScale(8),
   },
   processingWrap: {
     alignItems: 'center',
-    gap: 16,
-    paddingVertical: 20,
+    gap: verticalScale(14),
+    paddingVertical: verticalScale(20),
   },
   processingText: {
-    fontSize: theme.fontSize.small,
+    fontSize: moderateScale(13),
     color: theme.colors.primary,
     fontWeight: '600',
   },

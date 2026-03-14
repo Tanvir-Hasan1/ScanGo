@@ -10,12 +10,11 @@ export function ExternalLink(
     <Link
       target="_blank"
       {...props}
-      href={props.href}
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      href={props.href as any}
       onPress={(e) => {
         if (Platform.OS !== 'web') {
-          // Prevent the default behavior of linking to the default browser on native.
           e.preventDefault();
-          // Open the link in an in-app browser.
           WebBrowser.openBrowserAsync(props.href as string);
         }
       }}

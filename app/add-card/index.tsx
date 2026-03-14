@@ -3,11 +3,16 @@
  *
  * Flow:
  *  1. Permission Gate      – request camera permission
- *  2. Front Capture        – take front photo of the business card
- *  3. Back Capture         – take back photo of the business card
+ *  2. Front Capture        – take front photo of the business card (mandatory)
+ *  3. Back Capture         – take back photo (optional – can be skipped)
  *  4. OCR Processing       – run ML Kit text recognition on the front image
  *  5. Field Mapping UI     – tap detected text blocks to assign Name / Company / Phone / Address
- *  6. Save                 – persist card (images + fields) to SQLite and navigate back
+ *  6. Save                 – persist card (filename-only image refs + fields) to SQLite
+ *
+ * Image Storage Contract:
+ *   Only the FILENAME (e.g. "card_front_1712345678.jpg") is stored in SQLite.
+ *   Full path is resolved at runtime: FileSystem.documentDirectory + filename
+ *   This ensures backup/restore works correctly on any device.
  */
 
 import React, {
@@ -27,7 +32,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import * as FileSystem from 'expo-file-system/legacy';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import {
@@ -75,7 +80,22 @@ export default function AddCardScreen() {
   const device = useCameraDevice('back');
   const cameraRef = useRef<Camera | null>(null);
 
+  const headerConfig = (
+    <Stack.Screen
+      options={{
+        title: 'Add Card',
+        headerStyle: { backgroundColor: theme.colors.primary },
+        headerTintColor: '#fff',
+        headerTitleStyle: { fontWeight: '700' },
+      }}
+    />
+  );
+
   const [phase, setPhase] = useState<AppPhase>('permission');
+  // Filenames (not full paths) stored in DB
+  const [frontFilename, setFrontFilename] = useState<string | null>(null);
+  const [backFilename, setBackFilename] = useState<string | null>(null);
+  // Full URI used only for preview display
   const [frontUri, setFrontUri] = useState<string | null>(null);
   const [backUri, setBackUri] = useState<string | null>(null);
   const [ocrBlocks, setOcrBlocks] = useState<OcrBlock[]>([]);
@@ -88,7 +108,6 @@ export default function AddCardScreen() {
   });
   const [assignedIds, setAssignedIds] = useState<Set<number>>(new Set());
 
-  // On mount, check / request permission
   useEffect(() => {
     if (hasPermission) {
       setPhase('capture-front');
@@ -105,10 +124,14 @@ export default function AddCardScreen() {
     else Alert.alert('Permission Denied', 'Camera access is required to scan business cards.');
   }, [requestPermission]);
 
-  const saveImageToDocuments = useCallback(async (tempUri: string, name: string) => {
-    const destPath = `${FileSystem.documentDirectory}${name}`;
+  /**
+   * Copies a photo from the temp camera directory to DocumentDirectory.
+   * Returns both the filename (for DB) and the full URI (for preview).
+   */
+  const saveImageToDocuments = useCallback(async (tempUri: string, filename: string) => {
+    const destPath = `${FileSystem.documentDirectory}${filename}`;
     await FileSystem.copyAsync({ from: tempUri, to: destPath });
-    return destPath;
+    return { filename, fullUri: destPath };
   }, []);
 
   const handleCapture = useCallback(
@@ -117,28 +140,37 @@ export default function AddCardScreen() {
       try {
         const photo = await cameraRef.current.takePhoto({ flash: 'auto' });
         const filename = `card_${side}_${Date.now()}.jpg`;
-        const savedUri = await saveImageToDocuments(`file://${photo.path}`, filename);
+        const { fullUri } = await saveImageToDocuments(`file://${photo.path}`, filename);
 
         if (side === 'front') {
-          setFrontUri(savedUri);
+          setFrontFilename(filename);
+          setFrontUri(fullUri);
           setPhase('capture-back');
         } else {
-          setBackUri(savedUri);
-          // Move straight to OCR
+          setBackFilename(filename);
+          setBackUri(fullUri);
           setPhase('processing');
-          runOcr(savedUri, frontUri!);
+          runOcr(fullUri /* for OCR processing on front image */);
         }
       } catch (err) {
         console.error('Capture error:', err);
         Alert.alert('Capture Failed', 'Could not capture photo. Please try again.');
       }
     },
-    [cameraRef, frontUri, saveImageToDocuments],
+    [cameraRef, saveImageToDocuments],
   );
 
-  const runOcr = useCallback(async (backSaved: string, frontSaved: string) => {
+  const handleSkipBack = useCallback(() => {
+    // Skip back photo – proceed straight to OCR on front image
+    setBackFilename(null);
+    setBackUri(null);
+    setPhase('processing');
+    if (frontUri) runOcr(frontUri);
+  }, [frontUri]);
+
+  const runOcr = useCallback(async (imageUri: string) => {
     try {
-      const result = await TextRecognition.recognize(frontSaved);
+      const result = await TextRecognition.recognize(imageUri);
       const blocks: OcrBlock[] = result.blocks
         .map((block, idx) => ({ id: idx, text: block.text.trim() }))
         .filter((b) => b.text.length > 0);
@@ -154,22 +186,22 @@ export default function AddCardScreen() {
   const handleChipPress = useCallback(
     (block: OcrBlock) => {
       if (!activeField) return;
-      setFieldMap((prev) => ({ ...prev, [activeField!]: block.text }));
+      setFieldMap((prev) => {
+        const updated = { ...prev, [activeField!]: block.text };
+        // Auto-advance to next empty field
+        const fieldOrder: CardField[] = ['name', 'company', 'phone', 'address'];
+        const currentIdx = fieldOrder.indexOf(activeField);
+        const nextEmpty = fieldOrder.slice(currentIdx + 1).find((f) => !updated[f]);
+        setActiveField(nextEmpty ?? null);
+        return updated;
+      });
       setAssignedIds((prev) => new Set(prev).add(block.id));
-
-      // Auto-advance to next empty field
-      const fieldOrder: CardField[] = ['name', 'company', 'phone', 'address'];
-      const currentIdx = fieldOrder.indexOf(activeField);
-      const nextEmpty = fieldOrder.slice(currentIdx + 1).find(
-        (f) => !fieldMap[f] && f !== activeField,
-      );
-      setActiveField(nextEmpty ?? null);
     },
-    [activeField, fieldMap],
+    [activeField],
   );
 
   const handleSave = useCallback(async () => {
-    if (!frontUri) {
+    if (!frontFilename) {
       Alert.alert('Missing Photo', 'A front photo is required.');
       return;
     }
@@ -180,8 +212,8 @@ export default function AddCardScreen() {
         company: fieldMap.company,
         phone: fieldMap.phone,
         address: fieldMap.address,
-        front_image: frontUri,
-        back_image: backUri ?? '',
+        front_image: frontFilename,      // ← filename only, not full path
+        back_image: backFilename ?? '',  // ← filename only
       });
       router.back();
     } catch (err) {
@@ -189,72 +221,93 @@ export default function AddCardScreen() {
       Alert.alert('Save Failed', 'Could not save the card. Please try again.');
       setPhase('mapping');
     }
-  }, [fieldMap, frontUri, backUri, router]);
+  }, [fieldMap, frontFilename, backFilename, router]);
 
-  // ─── Render helpers ────────────────────────────────────────────────────────
+  const handleRetakeAll = useCallback(() => {
+    setFrontFilename(null);
+    setBackFilename(null);
+    setFrontUri(null);
+    setBackUri(null);
+    setOcrBlocks([]);
+    setAssignedIds(new Set());
+    setFieldMap({ name: '', company: '', phone: '', address: '' });
+    setActiveField('name');
+    setPhase('capture-front');
+  }, []);
+
+  // ─── Phase Renders ─────────────────────────────────────────────────────────
 
   if (phase === 'permission') {
-    return <PermissionGate onRequest={handleRequestPermission} />;
+    return (
+      <>
+        {headerConfig}
+        <PermissionGate onRequest={handleRequestPermission} />
+      </>
+    );
   }
 
   if (phase === 'capture-front' || phase === 'capture-back') {
     if (!device) {
       return (
-        <View style={styles.centeredFlex}>
-          <Text style={styles.errorText}>No camera device found.</Text>
-        </View>
+        <>
+          {headerConfig}
+          <View style={styles.centeredFlex}>
+            <Text style={styles.errorText}>No camera device found.</Text>
+          </View>
+        </>
       );
     }
     return (
-      <CaptureView
-        device={device}
-        cameraRef={cameraRef}
-        side={phase === 'capture-front' ? 'front' : 'back'}
-        thumbnail={phase === 'capture-back' ? frontUri : null}
-        onCapture={() => handleCapture(phase === 'capture-front' ? 'front' : 'back')}
-        onRetake={() => {
-          if (phase === 'capture-back') {
+      <>
+        {headerConfig}
+        <CaptureView
+          device={device}
+          cameraRef={cameraRef}
+          side={phase === 'capture-front' ? 'front' : 'back'}
+          thumbnail={phase === 'capture-back' ? frontUri : null}
+          onCapture={() => handleCapture(phase === 'capture-front' ? 'front' : 'back')}
+          onRetakeFront={() => {
+            setFrontFilename(null);
             setFrontUri(null);
             setPhase('capture-front');
-          }
-        }}
-      />
+          }}
+          onSkipBack={phase === 'capture-back' ? handleSkipBack : undefined}
+        />
+      </>
     );
   }
 
   if (phase === 'processing' || phase === 'saving') {
     return (
-      <View style={styles.centeredFlex}>
-        <ActivityIndicator size="large" color={theme.colors.primary} />
-        <Text style={styles.loadingText}>
-          {phase === 'processing' ? 'Reading card text…' : 'Saving card…'}
-        </Text>
-      </View>
+      <>
+        {headerConfig}
+        <View style={styles.centeredFlex}>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text style={styles.loadingText}>
+            {phase === 'processing' ? 'Reading card text…' : 'Saving card…'}
+          </Text>
+        </View>
+      </>
     );
   }
 
   // phase === 'mapping'
   return (
-    <MappingView
-      ocrBlocks={ocrBlocks}
-      fieldMap={fieldMap}
-      assignedIds={assignedIds}
-      activeField={activeField}
-      frontUri={frontUri}
-      backUri={backUri}
-      onFieldSelect={setActiveField}
-      onChipPress={handleChipPress}
-      onSave={handleSave}
-      onRetake={() => {
-        setFrontUri(null);
-        setBackUri(null);
-        setOcrBlocks([]);
-        setAssignedIds(new Set());
-        setFieldMap({ name: '', company: '', phone: '', address: '' });
-        setActiveField('name');
-        setPhase('capture-front');
-      }}
-    />
+    <>
+      {headerConfig}
+      <MappingView
+        ocrBlocks={ocrBlocks}
+        fieldMap={fieldMap}
+        assignedIds={assignedIds}
+        activeField={activeField}
+        frontUri={frontUri}
+        backUri={backUri}
+        onFieldSelect={setActiveField}
+        onChipPress={handleChipPress}
+        onSave={handleSave}
+        onRetake={handleRetakeAll}
+      />
+    </>
   );
 }
 
@@ -286,7 +339,8 @@ interface CaptureViewProps {
   side: 'front' | 'back';
   thumbnail: string | null;
   onCapture: () => void;
-  onRetake: () => void;
+  onRetakeFront: () => void;
+  onSkipBack?: () => void;
 }
 
 function CaptureView({
@@ -295,7 +349,8 @@ function CaptureView({
   side,
   thumbnail,
   onCapture,
-  onRetake,
+  onRetakeFront,
+  onSkipBack,
 }: CaptureViewProps) {
   const label = side === 'front' ? 'Front of Card' : 'Back of Card';
   const step = side === 'front' ? '1 / 2' : '2 / 2';
@@ -331,11 +386,19 @@ function CaptureView({
         {thumbnail && side === 'back' && (
           <View style={styles.thumbnailRow}>
             <Image source={{ uri: thumbnail }} style={styles.thumbnail} />
-            <TouchableOpacity style={styles.retakeBtn} onPress={onRetake}>
+            <TouchableOpacity style={styles.retakeBtn} onPress={onRetakeFront}>
               <Text style={styles.retakeBtnText}>↩ Retake Front</Text>
             </TouchableOpacity>
           </View>
         )}
+
+        {/* Skip Back button */}
+        {side === 'back' && onSkipBack && (
+          <TouchableOpacity style={styles.skipBtn} onPress={onSkipBack}>
+            <Text style={styles.skipBtnText}>Skip Back →</Text>
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity style={styles.captureBtn} onPress={onCapture} activeOpacity={0.8}>
           <View style={styles.captureBtnInner} />
         </TouchableOpacity>
@@ -500,7 +563,7 @@ function MappingView({
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
 const CARD_FRAME_W = scale(300);
-const CARD_FRAME_H = verticalScale(185); // standard business card ~1.75 aspect
+const CARD_FRAME_H = verticalScale(185);
 
 const styles = StyleSheet.create({
   // ── Shared ──
@@ -654,12 +717,12 @@ const styles = StyleSheet.create({
     paddingTop: verticalScale(12),
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.5)',
+    gap: verticalScale(10),
   },
   thumbnailRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: moderateScale(12),
-    marginBottom: verticalScale(12),
   },
   thumbnail: {
     width: scale(60),
@@ -677,7 +740,19 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.4)',
   },
   retakeBtnText: { color: '#fff', fontSize: theme.fontSize.small, fontWeight: '600' },
-
+  skipBtn: {
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: moderateScale(20),
+    paddingVertical: verticalScale(8),
+    borderRadius: theme.borderRadius.m,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)',
+  },
+  skipBtnText: {
+    color: '#fff',
+    fontSize: theme.fontSize.small,
+    fontWeight: '600',
+  },
   captureBtn: {
     width: scale(72),
     height: scale(72),
@@ -799,7 +874,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  // OCR chips
+  // OCR Chips
   chipsWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -809,32 +884,31 @@ const styles = StyleSheet.create({
   ocrChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: moderateScale(4),
     backgroundColor: '#fff',
     borderRadius: moderateScale(20),
     paddingVertical: verticalScale(8),
     paddingHorizontal: moderateScale(14),
     borderWidth: 1.5,
     borderColor: theme.colors.border,
+    gap: moderateScale(6),
     shadowColor: '#000',
     shadowOpacity: 0.04,
     shadowOffset: { width: 0, height: 1 },
     shadowRadius: 3,
     elevation: 1,
-    maxWidth: scale(280),
   },
   ocrChipAssigned: {
-    backgroundColor: '#e8f5e9',
+    backgroundColor: '#eafff0',
     borderColor: '#34c759',
   },
   ocrChipText: {
     fontSize: theme.fontSize.small,
     color: theme.colors.text,
-    flexShrink: 1,
+    fontWeight: '500',
+    maxWidth: scale(200),
   },
   ocrChipTextAssigned: {
     color: '#27ae60',
-    fontWeight: '600',
   },
   ocrChipCheck: {
     fontSize: moderateScale(12),
@@ -842,10 +916,10 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  // Action row
+  // Action Row
   actionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: verticalScale(4),
+    marginTop: verticalScale(8),
   },
 });
