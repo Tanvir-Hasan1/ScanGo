@@ -1,0 +1,84 @@
+﻿.\android\gradlew.bat 
+: 
+At line:1 char:1
++ 
+.\android\gradlew.bat 
+app:assembleDebug > 
+gradlew_output.txt 
+2>&1
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (:String) [   
+ ], RemoteExceptio    
+n
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+FAILURE: Build failed 
+with an exception.
+
+* What went wrong:
+Directory 'D:\React 
+native\with 
+expo\ScanGo' does not 
+contain a Gradle 
+build.
+
+A Gradle build's root 
+directory should 
+contain one of the 
+possible settings 
+files: 
+settings.gradle, 
+settings.gradle.kts, s
+ettings.gradle.dcl.It 
+may also contain one 
+of the possible build 
+files: build.gradle, 
+build.gradle.kts, 
+build.gradle.dcl.
+
+To create a new 
+Gradle build in this 
+directory run 
+'gradlew init'
+
+For more information 
+about the 'init' 
+task, please refer to 
+https://docs.gradle.or
+g/9.0.0/userguide/buil
+d_init_plugin.html in 
+the Gradle 
+documentation.
+
+For more details on 
+creating a Gradle 
+build, please refer 
+to https://docs.gradle
+.org/9.0.0/userguide/t
+utorial_using_tasks.ht
+ml in the Gradle 
+documentation.
+
+* Try:
+> Run gradlew init to 
+create a new Gradle 
+build in this 
+directory.
+> Run with 
+--stacktrace option 
+to get the stack 
+trace.
+> Run with --info or 
+--debug option to get 
+more log output.
+> Get more help at htt
+ps://help.gradle.org.
+
+BUILD FAILED in 1s
