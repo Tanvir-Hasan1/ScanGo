@@ -1,14 +1,14 @@
-import React from 'react';
 import { Tabs } from 'expo-router';
-import { Text, View, StyleSheet } from 'react-native';
+import React from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import { moderateScale, verticalScale } from 'react-native-size-matters';
-import { theme } from '../../theme';
 
 function TabIcon({ emoji, label, focused }: { emoji: string; label: string; focused: boolean }) {
   return (
     <View style={styles.tabIconWrap}>
-      <Text style={[styles.tabEmoji, focused && styles.tabEmojiActive]}>{emoji}</Text>
-      <Text style={[styles.tabLabel, focused && styles.tabLabelActive]}>{label}</Text>
+      <View style={[styles.iconBackground, focused && styles.iconBackgroundActive]}>
+        <Text style={styles.tabEmoji}>{emoji}</Text>
+      </View>
     </View>
   );
 }
@@ -20,13 +20,14 @@ export default function TabLayout() {
         headerShown: false,
         tabBarStyle: styles.tabBar,
         tabBarShowLabel: false,
+        tabBarItemStyle: styles.tabBarItem,
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon emoji="🗂️" label="Cards" focused={focused} />
+            <TabIcon emoji="🪪" label="Cards" focused={focused} />
           ),
         }}
       />
@@ -44,36 +45,42 @@ export default function TabLayout() {
 
 const styles = StyleSheet.create({
   tabBar: {
-    backgroundColor: '#fff',
-    borderTopColor: theme.colors.border,
+    position: 'absolute',
+    bottom: verticalScale(0),
+    borderWidth: 2,
+    borderColor: '#3A3A3C',
+    backgroundColor: '#ffffffff',
+    borderRadius: moderateScale(0),
+    height: verticalScale(64),
+    paddingBottom: 0,
     borderTopWidth: 1,
-    height: verticalScale(60),
-    paddingBottom: verticalScale(8),
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowOffset: { width: 0, height: -2 },
-    shadowRadius: 8,
-    elevation: 8,
+    
+  },
+  tabBarItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: moderateScale(20),
+    marginVertical: 0,
   },
   tabIconWrap: {
     alignItems: 'center',
     justifyContent: 'center',
-    gap: verticalScale(2),
+    width: '100%',
+  },
+  iconBackground: {
+    width: moderateScale(44),
+    height: moderateScale(44),
+    borderRadius: moderateScale(22),
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+  },
+  iconBackgroundActive: {
+    backgroundColor: '#3A3A3C',
   },
   tabEmoji: {
     fontSize: moderateScale(22),
-    opacity: 0.45,
-  },
-  tabEmojiActive: {
-    opacity: 1,
-  },
-  tabLabel: {
-    fontSize: moderateScale(10),
-    color: theme.colors.placeholder,
-    fontWeight: '500',
-  },
-  tabLabelActive: {
-    color: theme.colors.primary,
-    fontWeight: '700',
+    opacity: 0.7,
   },
 });

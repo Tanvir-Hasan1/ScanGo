@@ -1,4 +1,8 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
+import Constants from 'expo-constants';
+import * as SQLite from 'expo-sqlite';
+import * as FileSystem from 'expo-file-system/legacy';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -9,24 +13,26 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import * as FileSystem from 'expo-file-system/legacy';
-import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
-import { zip, unzip } from 'react-native-zip-archive';
 import { moderateScale, verticalScale } from 'react-native-size-matters';
+import { unzip, zip } from 'react-native-zip-archive';
+import { checkpointDB, closeDB, initDB } from '../../services/dbService';
 import { theme } from '../../theme';
-import { closeDB, initDB } from '../../services/dbService';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// ⚠️  Replace with your actual Google Cloud OAuth 2.0 Web Client ID
-const GOOGLE_WEB_CLIENT_ID = 'PLACEHOLDER_WEB_CLIENT_ID.apps.googleusercontent.com';
+// ⚠️  Loaded from .env (must be prefixed with EXPO_PUBLIC_)
+const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
 
 const BACKUP_FOLDER_NAME = 'CardsManager';
 const BACKUP_FILE_NAME = 'ScanGoBackup.zip';
 
 GoogleSignin.configure({
-  scopes: ['https://www.googleapis.com/auth/drive.file'],
-  webClientId: GOOGLE_WEB_CLIENT_ID,
+  scopes: [
+    'https://www.googleapis.com/auth/drive.file',
+    'email',
+    'profile',
+  ],
+  webClientId: GOOGLE_WEB_CLIENT_ID || '',
   offlineAccess: true,
 });
 
@@ -91,9 +97,16 @@ async function buildBackupStaging(): Promise<string> {
   const dbInfoAlt = await FileSystem.getInfoAsync(dbSrcAlt);
 
   if (dbInfo.exists) {
+    console.log(`Original DB found at ${dbSrc} (${dbInfo.size} bytes)`);
+    if (dbInfo.size <= 4096) {
+      console.warn('⚠️ WARNING: Source DB is only 4096 bytes (likely empty)!');
+    }
     await FileSystem.copyAsync({ from: dbSrc, to: `${stagingDir}cards.db` });
   } else if (dbInfoAlt.exists) {
+    console.log(`Original DB found at ${dbSrcAlt} (${dbInfoAlt.size} bytes)`);
     await FileSystem.copyAsync({ from: dbSrcAlt, to: `${stagingDir}cards.db` });
+  } else {
+    console.warn('CRITICAL: No source database found for backup!');
   }
 
   // Copy card images
@@ -119,6 +132,41 @@ export default function SettingsScreen() {
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processStatus, setProcessStatus] = useState('');
+
+  // ─── Diagnostic Helpers ───
+  const scanInternalStorage = async () => {
+    try {
+      setProcessStatus('Scanning storage...');
+      setIsProcessing(true);
+      const docDir = FileSystem.documentDirectory ?? '';
+      // On Android, documentDirectory is data/user/0/ID/files/
+      // baseDir is data/user/0/ID/
+      const baseDir = docDir.replace(/\/files\/$/, '/'); 
+      
+      const results: string[] = [];
+      const walk = async (dir: string, depth = 0) => {
+        if (depth > 3) return;
+        const contents = await FileSystem.readDirectoryAsync(dir).catch(() => []);
+        for (const item of contents) {
+          const path = `${dir}${item}`;
+          const info: any = await FileSystem.getInfoAsync(path);
+          if (info.exists) {
+            results.push(`${'  '.repeat(depth)}${item} (${info.isDirectory ? 'dir' : info.size + ' bytes'})`);
+            if (info.isDirectory) await walk(`${path}/`, depth + 1);
+          }
+        }
+      };
+
+      await walk(baseDir);
+      console.log('--- INTERNAL STORAGE SCAN ---\n' + results.join('\n'));
+      Alert.alert('Storage Scan Complete', 'Check your terminal for the full file list.');
+    } catch (e: any) {
+      console.error('Scan failed:', e);
+    } finally {
+      setIsProcessing(false);
+      setProcessStatus('');
+    }
+  };
 
   // Silent sign-in on mount
   useEffect(() => {
@@ -172,10 +220,24 @@ export default function SettingsScreen() {
 
     try {
       setProcessStatus('Preparing files…');
+      
+      // Ensure DB integrity: Checkpoint then Close.
+      try {
+        console.log('Synchronizing database (Checkpoint)...');
+        await checkpointDB();
+        console.log('Closing database for backup integrity...');
+        await closeDB();
+      } catch (dbErr) {
+        console.warn('Non-fatal DB sync error:', dbErr);
+      }
+      
       stagingDir = await buildBackupStaging();
 
       setProcessStatus('Compressing…');
       await zip(stagingDir, zipPath);
+      
+      // Re-initialize DB after copying is done
+      await initDB();
 
       setProcessStatus('Connecting to Google Drive…');
       const currentUser = await GoogleSignin.getCurrentUser();
@@ -307,16 +369,62 @@ export default function SettingsScreen() {
               await FileSystem.makeDirectoryAsync(extractDir, { intermediates: true });
               await unzip(zipPath, extractDir);
 
-              // Move cards.db → documentDirectory/SQLite/cards.db
+              // Move cards.db → multiple target locations
               const docDir = FileSystem.documentDirectory ?? '';
               const sqliteDir = `${docDir}SQLite/`;
+              // For Android, the native databases folder is often sibling to 'files'
+              const databasesDir = docDir.replace(/\/files\/$/, '/databases/'); 
               const dbExtracted = `${extractDir}cards.db`;
-              const dbInfo = await FileSystem.getInfoAsync(dbExtracted);
+              
+              // Diagnostic: List ALL files in extractDir
+              const extractedFiles = await FileSystem.readDirectoryAsync(extractDir);
+              console.log('Files found in backup ZIP root:', extractedFiles.join(', '));
+
+              const dbInfo: any = await FileSystem.getInfoAsync(dbExtracted);
+              console.log('Checking extracted database...', dbInfo.exists ? `Found (${dbInfo.size} bytes)` : 'NOT FOUND');
+
               if (dbInfo.exists) {
-                await FileSystem.makeDirectoryAsync(sqliteDir, { intermediates: true });
-                // Also write to docDir directly (expo-sqlite may look there)
-                await FileSystem.copyAsync({ from: dbExtracted, to: `${sqliteDir}cards.db` });
-                await FileSystem.copyAsync({ from: dbExtracted, to: `${docDir}cards.db` });
+                // Ensure target directories exist
+                await FileSystem.makeDirectoryAsync(sqliteDir, { intermediates: true }).catch(() => {});
+                await FileSystem.makeDirectoryAsync(databasesDir, { intermediates: true }).catch(() => {});
+                
+                const targetPaths = [
+                  `${sqliteDir}cards.db`,
+                  `${docDir}cards.db`,
+                  `${databasesDir}cards.db`
+                ];
+                
+                for (const dbDest of targetPaths) {
+                  try {
+                    // Delete main DB and SQLite journal files (WAL/SHM) to force fresh load
+                    await FileSystem.deleteAsync(dbDest, { idempotent: true }).catch(() => {});
+                    await FileSystem.deleteAsync(`${dbDest}-wal`, { idempotent: true }).catch(() => {});
+                    await FileSystem.deleteAsync(`${dbDest}-shm`, { idempotent: true }).catch(() => {});
+                    
+                    await FileSystem.copyAsync({ from: dbExtracted, to: dbDest });
+                    const check: any = await FileSystem.getInfoAsync(dbDest);
+                    console.log(`Successfully restored to: ${dbDest} (${check.size} bytes)`);
+                  } catch (copyErr) {
+                    console.warn(`Failed to restore to ${dbDest}:`, copyErr);
+                  }
+                }
+                
+                // NEW: Deep Verification query
+                try {
+                  console.log('Attempting verification query on cards.db...');
+                  const testDb = await SQLite.openDatabaseAsync('cards.db');
+                  // Check tables first
+                  const tables: any = await testDb.getAllAsync("SELECT name FROM sqlite_master WHERE type='table';");
+                  console.log('Tables found in restored DB:', tables.map((t:any) => t.name).join(', '));
+                  
+                  const result: any = await testDb.getAllAsync('SELECT COUNT(*) as count FROM cards');
+                  console.log(`VERIFICATION SUCCESS: Found ${result[0].count} cards.`);
+                  await testDb.closeAsync();
+                } catch (e) {
+                  console.error('VERIFICATION FAILED:', e);
+                }
+              } else {
+                console.warn('CRITICAL: cards.db was NOT FOUND in the ZIP root. Restore cannot proceed.');
               }
 
               // Move card images from images/ sub-folder
@@ -324,12 +432,16 @@ export default function SettingsScreen() {
               const imagesInfo = await FileSystem.getInfoAsync(imagesExtracted);
               if (imagesInfo.exists) {
                 const imgs = await FileSystem.readDirectoryAsync(imagesExtracted);
+                console.log(`Found ${imgs.length} images in backup.`);
                 for (const img of imgs) {
+                  const imgDest = `${docDir}${img}`;
+                  await FileSystem.deleteAsync(imgDest, { idempotent: true });
                   await FileSystem.copyAsync({
                     from: `${imagesExtracted}${img}`,
-                    to: `${docDir}${img}`,
+                    to: imgDest,
                   });
                 }
+                console.log('Images restored to:', docDir);
               }
 
               // Re-init DB with restored data
@@ -378,7 +490,7 @@ export default function SettingsScreen() {
               <View style={styles.userRow}>
                 <Text style={styles.userLabel}>Signed in as</Text>
                 <Text style={styles.userName} numberOfLines={1}>
-                  {userInfo.user?.email || 'Unknown'}
+                  {userInfo.data?.user?.name || userInfo.data?.user?.email || 'Unknown'}
                 </Text>
               </View>
 
@@ -419,9 +531,9 @@ export default function SettingsScreen() {
                 </TouchableOpacity>
               )}
 
-              {GOOGLE_WEB_CLIENT_ID.includes('PLACEHOLDER') && (
+              {!GOOGLE_WEB_CLIENT_ID && (
                 <Text style={styles.placeholderWarning}>
-                  ⚠️  Set GOOGLE_WEB_CLIENT_ID in settings.tsx before testing Google Sign-In.
+                  ⚠️  Set EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID in your .env file before testing Google Sign-In.
                 </Text>
               )}
             </View>
@@ -431,11 +543,19 @@ export default function SettingsScreen() {
         {/* About */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>ℹ️  About ScanGo</Text>
-          <Text style={styles.aboutText}>Version 1.0.0</Text>
-          <Text style={styles.aboutText}>Offline-First Business Card Scanner</Text>
+          <Text style={styles.aboutText}>Version 1.1.1 (Recovery Mode)</Text>
+          <Text style={styles.aboutText}>Identity: {Constants.expoConfig?.android?.package || 'Unknown'}</Text>
+          
           <Text style={styles.aboutNote}>
             All data is stored on-device. No cloud processing. No paid APIs.
           </Text>
+          
+          <TouchableOpacity 
+            style={[styles.secondaryBtn, { marginTop: 15, backgroundColor: '#f0f0f0' }]} 
+            onPress={scanInternalStorage}
+          >
+            <Text style={[styles.secondaryBtnText, { color: '#666' }]}>🔍  Scan Device Storage (Debug)</Text>
+          </TouchableOpacity>
         </View>
 
       </ScrollView>
