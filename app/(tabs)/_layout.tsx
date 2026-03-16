@@ -1,13 +1,24 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { moderateScale, verticalScale } from 'react-native-size-matters';
+import { IdCard, Settings } from 'lucide-react-native/icons';
 
-function TabIcon({ emoji, label, focused }: { emoji: string; label: string; focused: boolean }) {
+function TabIcon({ 
+  Icon, 
+  focused 
+}: { 
+  Icon: React.ElementType; 
+  focused: boolean 
+}) {
   return (
     <View style={styles.tabIconWrap}>
       <View style={[styles.iconBackground, focused && styles.iconBackgroundActive]}>
-        <Text style={styles.tabEmoji}>{emoji}</Text>
+        <Icon 
+          size={moderateScale(24)} 
+          color={focused ? '#fff' : '#3A3A3C'} 
+          strokeWidth={focused ? 2.5 : 2}
+        />
       </View>
     </View>
   );
@@ -27,7 +38,7 @@ export default function TabLayout() {
         name="index"
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon emoji="🪪" label="Cards" focused={focused} />
+            <TabIcon Icon={IdCard} focused={focused} />
           ),
         }}
       />
@@ -35,7 +46,7 @@ export default function TabLayout() {
         name="settings"
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon emoji="⚙️" label="Settings" focused={focused} />
+            <TabIcon Icon={Settings} focused={focused} />
           ),
         }}
       />
@@ -48,8 +59,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: verticalScale(0),
     borderWidth: 2,
-    borderColor: '#3A3A3C',
-    backgroundColor: '#ffffffff',
+    backgroundColor: '#eceaeaff',
     borderRadius: moderateScale(0),
     height: verticalScale(64),
     paddingBottom: 0,

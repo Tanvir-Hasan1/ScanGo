@@ -133,40 +133,42 @@ export default function SettingsScreen() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processStatus, setProcessStatus] = useState('');
 
-  // ─── Diagnostic Helpers ───
-  const scanInternalStorage = async () => {
-    try {
-      setProcessStatus('Scanning storage...');
-      setIsProcessing(true);
-      const docDir = FileSystem.documentDirectory ?? '';
-      // On Android, documentDirectory is data/user/0/ID/files/
-      // baseDir is data/user/0/ID/
-      const baseDir = docDir.replace(/\/files\/$/, '/'); 
-      
-      const results: string[] = [];
-      const walk = async (dir: string, depth = 0) => {
-        if (depth > 3) return;
-        const contents = await FileSystem.readDirectoryAsync(dir).catch(() => []);
-        for (const item of contents) {
-          const path = `${dir}${item}`;
-          const info: any = await FileSystem.getInfoAsync(path);
-          if (info.exists) {
-            results.push(`${'  '.repeat(depth)}${item} (${info.isDirectory ? 'dir' : info.size + ' bytes'})`);
-            if (info.isDirectory) await walk(`${path}/`, depth + 1);
-          }
-        }
-      };
-
-      await walk(baseDir);
-      console.log('--- INTERNAL STORAGE SCAN ---\n' + results.join('\n'));
-      Alert.alert('Storage Scan Complete', 'Check your terminal for the full file list.');
-    } catch (e: any) {
-      console.error('Scan failed:', e);
-    } finally {
-      setIsProcessing(false);
-      setProcessStatus('');
-    }
-  };
+/*
+   // ─── Diagnostic Helpers ───
+   const scanInternalStorage = async () => {
+     try {
+       setProcessStatus('Scanning storage...');
+       setIsProcessing(true);
+       const docDir = FileSystem.documentDirectory ?? '';
+       // On Android, documentDirectory is data/user/0/ID/files/
+       // baseDir is data/user/0/ID/
+       const baseDir = docDir.replace(/\/files\/$/, '/'); 
+       
+       const results: string[] = [];
+       const walk = async (dir: string, depth = 0) => {
+         if (depth > 3) return;
+         const contents = await FileSystem.readDirectoryAsync(dir).catch(() => []);
+         for (const item of contents) {
+           const path = `${dir}${item}`;
+           const info: any = await FileSystem.getInfoAsync(path);
+           if (info.exists) {
+             results.push(`${'  '.repeat(depth)}${item} (${info.isDirectory ? 'dir' : info.size + ' bytes'})`);
+             if (info.isDirectory) await walk(`${path}/`, depth + 1);
+           }
+         }
+       };
+ 
+       await walk(baseDir);
+       console.log('--- INTERNAL STORAGE SCAN ---\n' + results.join('\n'));
+       Alert.alert('Storage Scan Complete', 'Check your terminal for the full file list.');
+     } catch (e: any) {
+       console.error('Scan failed:', e);
+     } finally {
+       setIsProcessing(false);
+       setProcessStatus('');
+     }
+   };
+*/
 
   // Silent sign-in on mount
   useEffect(() => {
@@ -543,19 +545,19 @@ export default function SettingsScreen() {
         {/* About */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>ℹ️  About ScanGo</Text>
-          <Text style={styles.aboutText}>Version 1.1.1 (Recovery Mode)</Text>
-          <Text style={styles.aboutText}>Identity: {Constants.expoConfig?.android?.package || 'Unknown'}</Text>
           
           <Text style={styles.aboutNote}>
-            All data is stored on-device. No cloud processing. No paid APIs.
+            ScanGo is your privacy-focused business card manager. It scans and organizes your physical cards entirely offline, keeping your data secure and on your device.
           </Text>
           
+          {/*
           <TouchableOpacity 
             style={[styles.secondaryBtn, { marginTop: 15, backgroundColor: '#f0f0f0' }]} 
             onPress={scanInternalStorage}
           >
             <Text style={[styles.secondaryBtnText, { color: '#666' }]}>🔍  Scan Device Storage (Debug)</Text>
           </TouchableOpacity>
+          */}
         </View>
 
       </ScrollView>

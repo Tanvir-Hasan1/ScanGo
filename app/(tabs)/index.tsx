@@ -1,4 +1,6 @@
-import React, { useState, useCallback, useRef } from 'react';
+import * as FileSystem from 'expo-file-system/legacy';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -10,11 +12,9 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useRouter } from 'expo-router';
-import * as FileSystem from 'expo-file-system/legacy';
 import { moderateScale, scale, verticalScale } from 'react-native-size-matters';
-import { theme } from '../../theme';
 import { initDB, searchCards } from '../../services/dbService';
+import { theme } from '../../theme';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -370,7 +370,7 @@ const styles = StyleSheet.create({
   // FAB
   fab: {
     position: 'absolute',
-    bottom: verticalScale(24),
+    bottom: verticalScale(75),
     right: scale(20),
     width: FAB_SIZE,
     height: FAB_SIZE,
