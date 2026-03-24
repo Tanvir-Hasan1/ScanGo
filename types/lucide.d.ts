@@ -1,4 +1,4 @@
-declare module 'lucide-react-native/icons' {
+declare module 'lucide-react-native' {
   import { ForwardRefExoticComponent } from 'react';
   import { SvgProps } from 'react-native-svg';
   

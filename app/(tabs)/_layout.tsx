@@ -2,7 +2,7 @@ import { Tabs } from 'expo-router';
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { moderateScale, verticalScale } from 'react-native-size-matters';
-import { IdCard, Settings } from 'lucide-react-native/icons';
+import { IdCard, Settings } from 'lucide-react-native';
 
 function TabIcon({ 
   Icon, 
