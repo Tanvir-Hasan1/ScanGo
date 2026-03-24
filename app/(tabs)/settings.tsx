@@ -17,6 +17,9 @@ import { moderateScale, verticalScale } from 'react-native-size-matters';
 import { unzip, zip } from 'react-native-zip-archive';
 import { checkpointDB, closeDB, initDB } from '../../services/dbService';
 import { theme } from '../../theme';
+import BannerAd from '../../components/BannerAd';
+import { useInterstitialAd } from '../../hooks/useInterstitialAd';
+import { useRewardedAd } from '../../hooks/useRewardedAd';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -132,6 +135,9 @@ export default function SettingsScreen() {
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processStatus, setProcessStatus] = useState('');
+
+  const { isLoaded: isInterstitialLoaded, showInterstitial } = useInterstitialAd();
+  const { isLoaded: isRewardedLoaded, showRewarded } = useRewardedAd();
 
 /*
    // ─── Diagnostic Helpers ───
@@ -558,6 +564,35 @@ export default function SettingsScreen() {
             <Text style={[styles.secondaryBtnText, { color: '#666' }]}>🔍  Scan Device Storage (Debug)</Text>
           </TouchableOpacity>
           */}
+        </View>
+
+        {/* Google Ads Integration Test */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>📱  Google Ads Test</Text>
+          
+          <BannerAd />
+
+          <TouchableOpacity 
+            style={[styles.secondaryBtn, { marginTop: 15 }]} 
+            onPress={showInterstitial}
+            disabled={!isInterstitialLoaded}
+          >
+            <Text style={styles.secondaryBtnText}>
+              {isInterstitialLoaded ? '🖼️  Show Interstitial Ad' : '⏳  Loading Interstitial...'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={[styles.secondaryBtn, { marginTop: 15, backgroundColor: '#ffeaf0' }]} 
+            onPress={() => showRewarded((reward) => {
+              Alert.alert('Reward Earned!', `You received ${reward.amount} ${reward.type}`);
+            })}
+            disabled={!isRewardedLoaded}
+          >
+            <Text style={[styles.secondaryBtnText, { color: '#e74c3c' }]}>
+              {isRewardedLoaded ? '🎁  Show Rewarded Video' : '⏳  Loading Rewarded...'}
+            </Text>
+          </TouchableOpacity>
         </View>
 
       </ScrollView>
