@@ -1,28 +1,32 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { InterstitialAd, AdEventType, TestIds } from 'react-native-google-mobile-ads';
 import { Platform } from 'react-native';
 
 const adUnitId = __DEV__ ? TestIds.INTERSTITIAL : (Platform.OS === 'ios' ? 'ca-app-pub-3940256099942544/4411468910' : 'ca-app-pub-3940256099942544/1033173712');
 
-// Preload interstitial
-const interstitial = InterstitialAd.createForAdRequest(adUnitId, {
-  requestNonPersonalizedAdsOnly: true,
-});
-
 export function useInterstitialAd() {
   const [isLoaded, setIsLoaded] = useState(false);
+  const interstitialRef = useRef<InterstitialAd | null>(null);
 
   useEffect(() => {
-    let unsubscribeLoaded: () => void;
-    let unsubscribeClosed: () => void;
+    const interstitial = InterstitialAd.createForAdRequest(adUnitId, {
+      requestNonPersonalizedAdsOnly: true,
+    });
+    interstitialRef.current = interstitial;
 
     let isMounted = true;
 
-    unsubscribeLoaded = interstitial.addAdEventListener(AdEventType.LOADED, () => {
+    const unsubscribeLoaded = interstitial.addAdEventListener(AdEventType.LOADED, () => {
+      console.log('Interstitial Ad LOADED successfully');
       if (isMounted) setIsLoaded(true);
     });
 
-    unsubscribeClosed = interstitial.addAdEventListener(AdEventType.CLOSED, () => {
+    const unsubscribeError = interstitial.addAdEventListener(AdEventType.ERROR, (error) => {
+      console.error('Interstitial Ad failed to load: ', error);
+      if (isMounted) setIsLoaded(false);
+    });
+
+    const unsubscribeClosed = interstitial.addAdEventListener(AdEventType.CLOSED, () => {
        if (isMounted) setIsLoaded(false);
        // Load the next ad for future use
        interstitial.load(); 
@@ -33,19 +37,27 @@ export function useInterstitialAd() {
 
     return () => {
       isMounted = false;
-      if (unsubscribeLoaded) unsubscribeLoaded();
-      if (unsubscribeClosed) unsubscribeClosed();
+      unsubscribeLoaded();
+      unsubscribeClosed();
+      unsubscribeError();
     };
   }, []);
 
-  const showInterstitial = () => {
-    if (isLoaded) {
+  const showInterstitial = (onAdClosed?: () => void) => {
+    const interstitial = interstitialRef.current;
+    if (isLoaded && interstitial) {
+      if (onAdClosed) {
+        const unsubscribe = interstitial.addAdEventListener(AdEventType.CLOSED, () => {
+          onAdClosed();
+          unsubscribe();
+        });
+      }
       interstitial.show();
       setIsLoaded(false);
     } else {
       console.log('Interstitial ad not loaded yet');
-      // Attempt to load for next time
-      interstitial.load();
+      if (interstitial) interstitial.load();
+      if (onAdClosed) onAdClosed(); // Proceed immediately if there's no ad ready
     }
   };
 

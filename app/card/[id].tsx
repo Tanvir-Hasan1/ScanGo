@@ -23,6 +23,9 @@ import NfcManager, { Ndef, NfcTech } from 'react-native-nfc-manager';
 import { moderateScale, scale, verticalScale } from 'react-native-size-matters';
 import { theme } from '../../theme';
 import { getCardById, deleteCard, updateCard } from '../../services/dbService';
+import { useInterstitialAd } from '../../hooks/useInterstitialAd';
+import { useRewardedAd } from '../../hooks/useRewardedAd';
+import BannerAd from '../../components/BannerAd';
 
 // Initialize NFC Manager once
 NfcManager.start();
@@ -74,6 +77,9 @@ export default function CardDetailsScreen() {
   // Image Viewer State
   const [viewerImage, setViewerImage] = useState<string | null>(null);
 
+  const { showInterstitial } = useInterstitialAd();
+  const { showRewarded } = useRewardedAd();
+
   useEffect(() => {
     const loadCard = async () => {
       if (!id || typeof id !== 'string') return;
@@ -108,42 +114,50 @@ export default function CardDetailsScreen() {
       setIsEditing(false);
     } else {
       // Start editing
-      if (card) {
-        setDraft({
-          name: card.name,
-          company: card.company,
-          phone: card.phone,
-          address: card.address,
-          email: card.email,
-          website: card.website,
-        });
-      }
-      setIsEditing(true);
+      showInterstitial(() => {
+        if (card) {
+          setDraft({
+            name: card.name,
+            company: card.company,
+            phone: card.phone,
+            address: card.address,
+            email: card.email,
+            website: card.website,
+          });
+        }
+        setIsEditing(true);
+      });
     }
-  }, [isEditing, card]);
+  }, [isEditing, card, showInterstitial]);
 
   const handleSaveEdits = useCallback(async () => {
     if (!card?.id) return;
     setIsSaving(true);
-    try {
-      await updateCard(card.id, {
-        name: draft.name,
-        company: draft.company,
-        phone: draft.phone,
-        address: draft.address,
-        email: draft.email,
-        website: draft.website,
-      });
-      // Update local state
-      setCard({ ...card, ...draft } as CardData);
-      setIsEditing(false);
-    } catch (err) {
-      console.error(err);
-      Alert.alert('Error', 'Could not save changes.');
-    } finally {
-      setIsSaving(false);
-    }
-  }, [card, draft]);
+    
+    showRewarded(
+      () => {}, // onEarned
+      async () => { // onClosed
+        try {
+          await updateCard(card.id, {
+            name: draft.name,
+            company: draft.company,
+            phone: draft.phone,
+            address: draft.address,
+            email: draft.email,
+            website: draft.website,
+          });
+          // Update local state
+          setCard({ ...card, ...draft } as CardData);
+          setIsEditing(false);
+        } catch (err) {
+          console.error(err);
+          Alert.alert('Error', 'Could not save changes.');
+        } finally {
+          setIsSaving(false);
+        }
+      }
+    );
+  }, [card, draft, showRewarded]);
 
   const handleCall = useCallback(() => {
     if (!card?.phone) {
@@ -200,23 +214,25 @@ export default function CardDetailsScreen() {
   // Share via React Native's built-in Share
   const handleShare = useCallback(async () => {
     if (!card) return;
-    const lines: string[] = ['📇 Business Card'];
-    if (card.name) lines.push(`👤 ${card.name}`);
-    if (card.company) lines.push(`🏢 ${card.company}`);
-    if (card.phone) lines.push(`📞 ${card.phone}`);
-    if (card.address) lines.push(`📍 ${card.address}`);
-    if (card.email) lines.push(`✉️ ${card.email}`);
-    if (card.website) lines.push(`🌐 ${card.website}`);
+    showInterstitial(async () => {
+      const lines: string[] = ['📇 Business Card'];
+      if (card.name) lines.push(`👤 ${card.name}`);
+      if (card.company) lines.push(`🏢 ${card.company}`);
+      if (card.phone) lines.push(`📞 ${card.phone}`);
+      if (card.address) lines.push(`📍 ${card.address}`);
+      if (card.email) lines.push(`✉️ ${card.email}`);
+      if (card.website) lines.push(`🌐 ${card.website}`);
 
-    try {
-      await Share.share({
-        message: lines.join('\n'),
-        title: card.name || 'Business Card',
-      });
-    } catch (err: any) {
-      console.warn('Share error:', err);
-    }
-  }, [card]);
+      try {
+        await Share.share({
+          message: lines.join('\n'),
+          title: card.name || 'Business Card',
+        });
+      } catch (err: any) {
+        console.warn('Share error:', err);
+      }
+    });
+  }, [card, showInterstitial]);
 
   const handleDelete = useCallback(() => {
     Alert.alert('Delete Card', 'Are you sure you want to delete this card?', [
@@ -224,26 +240,31 @@ export default function CardDetailsScreen() {
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: async () => {
+        onPress: () => {
           if (!card?.id) return;
-          try {
-            // Delete image files from DocumentDirectory
-            const filesToDelete = [card.front_image, card.back_image].filter(Boolean);
-            for (const filename of filesToDelete) {
-              const uri = resolveImageUri(filename);
-              if (uri) {
-                await FileSystem.deleteAsync(uri, { idempotent: true });
+          showRewarded(
+            () => {}, // onEarned
+            async () => { // onClosed
+              try {
+                // Delete image files from DocumentDirectory
+                const filesToDelete = [card.front_image, card.back_image].filter(Boolean);
+                for (const filename of filesToDelete) {
+                  const uri = resolveImageUri(filename);
+                  if (uri) {
+                    await FileSystem.deleteAsync(uri, { idempotent: true });
+                  }
+                }
+                await deleteCard(card.id);
+                router.back();
+              } catch (err) {
+                Alert.alert('Error', 'Could not delete card.');
               }
             }
-            await deleteCard(card.id);
-            router.back();
-          } catch (err) {
-            Alert.alert('Error', 'Could not delete card.');
-          }
+          );
         },
       },
     ]);
-  }, [card, router]);
+  }, [card, router, showRewarded]);
 
   // ─── NFC Share (vCard 3.0) ───
 
@@ -266,55 +287,53 @@ export default function CardDetailsScreen() {
   const handleNfcShare = useCallback(async () => {
     if (!card) return;
 
-    const isSupported = await NfcManager.isSupported();
-    if (!isSupported) {
-      Alert.alert('NFC Not Supported', 'Your device does not support NFC.');
-      return;
-    }
-    const isEnabled = await NfcManager.isEnabled();
-    if (!isEnabled) {
-      Alert.alert('NFC Disabled', 'Please enable NFC in your device settings.');
-      return;
-    }
-
-    try {
-      setIsNfcWriting(true);
-      Alert.alert('NFC Ready', 'Hold your phone near another NFC device to share the contact.', [
-        { text: 'Cancel', onPress: () => { NfcManager.cancelTechnologyRequest(); setIsNfcWriting(false); } },
-      ]);
-
-      await NfcManager.requestTechnology(NfcTech.Ndef);
-
-      // Correct encoding for text/vcard MIME media record
-      // react-native-nfc-manager Ndef.record() signature:
-      //   record(tnf, type: string | number[], id, payload: number[])
-      const vcardBytes = Array.from(
-        new TextEncoder().encode(vCardString)
-      ) as number[];
-
-      // Use the string form of type to satisfy TS signature
-      const record = Ndef.record(
-        Ndef.TNF_MIME_MEDIA,
-        'text/vcard',       // type as string (library also accepts string)
-        [],
-        vcardBytes,
-      );
-
-      const bytes = Ndef.encodeMessage([record]);
-
-      if (bytes) {
-        await NfcManager.ndefHandler.writeNdefMessage(bytes);
-        Alert.alert('Success', 'Contact shared via NFC!');
+    showInterstitial(async () => {
+      const isSupported = await NfcManager.isSupported();
+      if (!isSupported) {
+        Alert.alert('NFC Not Supported', 'Your device does not support NFC.');
+        return;
       }
-    } catch (ex: any) {
-      if (ex?.message !== 'cancelled') {
-        console.warn('NFC write error:', ex);
+      const isEnabled = await NfcManager.isEnabled();
+      if (!isEnabled) {
+        Alert.alert('NFC Disabled', 'Please enable NFC in your device settings.');
+        return;
       }
-    } finally {
-      NfcManager.cancelTechnologyRequest();
-      setIsNfcWriting(false);
-    }
-  }, [card, vCardString]);
+
+      try {
+        setIsNfcWriting(true);
+        Alert.alert('NFC Ready', 'Hold your phone near another NFC device to share the contact.', [
+          { text: 'Cancel', onPress: () => { NfcManager.cancelTechnologyRequest(); setIsNfcWriting(false); } },
+        ]);
+
+        await NfcManager.requestTechnology(NfcTech.Ndef);
+
+        const vcardBytes = Array.from(
+          new TextEncoder().encode(vCardString)
+        ) as number[];
+
+        const record = Ndef.record(
+          Ndef.TNF_MIME_MEDIA,
+          'text/vcard',       
+          [],
+          vcardBytes,
+        );
+
+        const bytes = Ndef.encodeMessage([record]);
+
+        if (bytes) {
+          await NfcManager.ndefHandler.writeNdefMessage(bytes);
+          Alert.alert('Success', 'Contact shared via NFC!');
+        }
+      } catch (ex: any) {
+        if (ex?.message !== 'cancelled') {
+          console.warn('NFC write error:', ex);
+        }
+      } finally {
+        NfcManager.cancelTechnologyRequest();
+        setIsNfcWriting(false);
+      }
+    });
+  }, [card, vCardString, showInterstitial]);
 
   // ─── Render ───
 
@@ -331,6 +350,7 @@ export default function CardDetailsScreen() {
       <Stack.Screen
         options={{
           title: isEditing ? 'Edit Card' : (card.name || 'Card Details'),
+          headerTitleAlign: 'center',
           headerStyle: { backgroundColor: theme.colors.primary },
           headerTintColor: '#fff',
           headerTitleStyle: { fontWeight: '700' },
@@ -543,6 +563,11 @@ export default function CardDetailsScreen() {
           </SafeAreaView>
         </View>
       </Modal>
+
+      {/* Persistent Banner Ad at the bottom */}
+      <View style={{ alignItems: 'center', backgroundColor: theme.colors.background }}>
+        <BannerAd />
+      </View>
     </SafeAreaView>
   );
 }

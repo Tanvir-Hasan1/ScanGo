@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { moderateScale, scale, verticalScale } from 'react-native-size-matters';
 import { initDB, searchCards } from '../../services/dbService';
 import { theme } from '../../theme';
+import { useInterstitialAd } from '../../hooks/useInterstitialAd';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -101,6 +102,8 @@ export default function HomeScreen() {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  const { showInterstitial } = useInterstitialAd();
 
   const loadCards = useCallback(async (q = '') => {
     try {
@@ -128,7 +131,12 @@ export default function HomeScreen() {
     searchTimeout.current = setTimeout(() => loadCards(text), 300);
   };
 
-  const handleAddCard = () => router.push('/add-card');
+  const handleAddCard = () => {
+    showInterstitial(() => {
+      router.push('/add-card');
+    });
+  };
+  
   const handleCardPress = (id: string) => router.push(`/card/${id}`);
 
   return (

@@ -1,13 +1,14 @@
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
-import 'react-native-reanimated';
 import mobileAds from 'react-native-google-mobile-ads';
+import 'react-native-reanimated';
 
 SplashScreen.preventAutoHideAsync();
 
 export {
-  ErrorBoundary,
+  ErrorBoundary
 } from 'expo-router';
 
 export const unstable_settings = {
@@ -21,14 +22,17 @@ export default function RootLayout() {
       .then(adapterStatuses => {
         // Initialization complete!
       });
-      
+
     SplashScreen.hideAsync();
   }, []);
 
   return (
-    <Stack>
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
-    </Stack>
+    <>
+      <StatusBar style="light" />
+      <Stack>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
+      </Stack>
+    </>
   );
 }

@@ -574,7 +574,7 @@ export default function SettingsScreen() {
 
           <TouchableOpacity 
             style={[styles.secondaryBtn, { marginTop: 15 }]} 
-            onPress={showInterstitial}
+            onPress={() => showInterstitial()}
             disabled={!isInterstitialLoaded}
           >
             <Text style={styles.secondaryBtnText}>

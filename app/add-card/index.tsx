@@ -43,6 +43,7 @@ import {
 import { moderateScale, scale, verticalScale } from 'react-native-size-matters';
 import { theme } from '../../theme';
 import { addCard } from '../../services/dbService';
+import { useRewardedAd } from '../../hooks/useRewardedAd';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -107,6 +108,8 @@ export default function AddCardScreen() {
     address: '',
   });
   const [assignedIds, setAssignedIds] = useState<Set<number>>(new Set());
+  
+  const { showRewarded } = useRewardedAd();
 
   useEffect(() => {
     if (hasPermission) {
@@ -215,13 +218,18 @@ export default function AddCardScreen() {
         front_image: frontFilename,      // ← filename only, not full path
         back_image: backFilename ?? '',  // ← filename only
       });
-      router.back();
+      
+      // Play rewarded video ad before navigating back
+      showRewarded(
+        () => console.log('Reward earned!'), // onEarned
+        () => router.back() // onClosed
+      );
     } catch (err) {
       console.error('Save error:', err);
       Alert.alert('Save Failed', 'Could not save the card. Please try again.');
       setPhase('mapping');
     }
-  }, [fieldMap, frontFilename, backFilename, router]);
+  }, [fieldMap, frontFilename, backFilename, router, showRewarded]);
 
   const handleRetakeAll = useCallback(() => {
     setFrontFilename(null);
